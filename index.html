@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cardiac — الرسم البياني اليومي (Printed / Served)</title>
+<style>
+  :root{
+    --bg:#0b1320; --ink:#eaf2ff; --muted:#9fb4db;
+    --panel:#111a2b; --border:#1f2a44;
+    --axis:#2a3a5a; --accent:#14b8a6;
+    --printed:#60a5fa; --served:#34d399;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  header{padding:14px 16px;border-bottom:1px solid var(--border);background:linear-gradient(90deg,#0f172a,#0b1320)}
+  h1{margin:0;font-size:clamp(18px,4vw,22px)}
+  main{max-width:1100px;margin:16px auto;padding:0 14px}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;color:var(--muted)}
+  button{background:var(--panel);color:var(--ink);border:1px solid var(--border);padding:8px 12px;border-radius:10px;cursor:pointer}
+  button.active{outline:2px solid var(--accent)}
+  input{background:#0f1626;color:var(--ink);border:1px solid var(--border);border-radius:10px;padding:8px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+  .day{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:12px}
+  .date{font-weight:800;font-size:22px;text-align:center;margin-bottom:8px}
+  .bars{position:relative;height:220px;background:linear-gradient(to top,transparent 98%,var(--axis) 98%);border-radius:12px;border:1px solid var(--border);padding:8px}
+  .bar{position:absolute;bottom:26px;width:56px;border-radius:8px 8px 0 0;left:50%;transform:translateX(-100px);}
+  .bar.served{left:50%;transform:translateX(44px);}
+  .xlabels{position:absolute;bottom:4px;left:0;right:0;display:flex;justify-content:space-around;font-weight:700;color:#cfe2ff}
+  .xlabels span{width:50%;text-align:center}
+  .printed{background:var(--printed)}
+  .served{background:var(--served)}
+  .avg{margin-top:10px;text-align:center;font-weight:800}
+  .avg small{display:block;color:var(--muted);font-weight:400}
+  .note{color:var(--muted);font-size:12px;margin-top:6px}
+</style>
+<!-- Firebase (compat) -->
+<script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
+</head>
+<body>
+<header><h1>الرسم البياني — Printed / Served — (فلتر 1–4 أيام)</h1></header>
+<main>
+  <div class="controls">
+    <button data-d="1">آخر يوم</button>
+    <button data-d="2" class="active">آخر يومين</button>
+    <button data-d="3">آخر 3 أيام</button>
+    <button data-d="4">آخر 4 أيام</button>
+    <div style="margin-inline-start:auto;display:flex;gap:8px;align-items:center">
+      <label>من</label><input type="date" id="fromD">
+      <label>إلى</label><input type="date" id="toD">
+      <button id="apply">تطبيق</button>
+    </div>
+  </div>
+
+  <div id="grid" class="grid"></div>
+  <div class="note">البيانات من: <code>/audit/&lt;env&gt;/daily/{YYYY-MM-DD}</code> (سنابة 16:40). الصفحة لا تتأثر بـ Restart.</div>
+</main>
+
+<script>
+// 1) Firebase config (مأخوذ من صفحة التقرير اللي أعطيتِني إياها)
+const firebaseConfig = {
+  apiKey:"AIzaSyCWWnMsge75Q3_MDF9Aj9wo4C5KD6RVGfw",
+  authDomain:"q-matic-b7d77.firebaseapp.com",
+  databaseURL:"https://q-matic-b7d77-default-rtdb.firebaseio.com",
+  projectId:"q-matic-b7d77",
+  storageBucket:"q-matic-b7d77.appspot.com",
+  messagingSenderId:"908187704899",
+  appId:"1:908187704899:web:b8bcf33cda90bafe81bef6"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// 2) ENV عبر ?env= وإلا الافتراضي cardiac_demo
+const params = new URLSearchParams(location.search);
+const ENV = params.get('env') || 'cardiac_demo';
+const ROOT = `/audit/${ENV}/daily`;
+
+// 3) عناصر
+const grid = document.getElementById('grid');
+const btns = Array.from(document.querySelectorAll('button[data-d]'));
+const fromD = document.getElementById('fromD');
+const toD   = document.getElementById('toD');
+document.getElementById('apply').onclick = ()=>{
+  if (fromD.value && toD.value) loadRange(fromD.value, toD.value);
+};
+
+btns.forEach(b=> b.addEventListener('click', ()=> setDays(parseInt(b.dataset.d,10)) ));
+
+// 4) تحميل المدى
+async function loadRange(fromStr, toStr){
+  const snap = await db.ref(ROOT).once('value');
+  const all = snap.val() || {};
+  const from = new Date(fromStr);
+  const to = new Date(toStr);
+  const dates = Object.keys(all)
+    .filter(d => { const dt = new Date(d); return dt >= from && dt <= to; })
+    .sort((a,b)=> new Date(a) - new Date(b));
+
+  renderDays(dates.map(d => ({date:d, ...all[d]})));
+}
+
+function ymd(d){
+  const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${da}`;
+}
+function setDays(n){
+  btns.forEach(b=> b.classList.toggle('active', b.dataset.d == String(n)));
+  const to=new Date(); const from=new Date(); from.setDate(to.getDate() - (n-1));
+  fromD.value = ymd(from); toD.value = ymd(to);
+  loadRange(fromD.value, toD.value);
+}
+
+function renderDays(rows){
+  grid.innerHTML = rows.map(r => dayCard(r)).join('');
+  rows.forEach((r,idx)=>{
+    const pr = Number(r.printed||0), sv = Number(r.served||0);
+    const max = Math.max(pr, sv, 1);
+    const pH = Math.round((pr/max) * 160);
+    const sH = Math.round((sv/max) * 160);
+    const card = grid.children[idx];
+    const pBar = card.querySelector('.bar.printed');
+    const sBar = card.querySelector('.bar.served');
+    pBar.style.height = pH + 'px';
+    sBar.style.height = sH + 'px';
+  });
+}
+
+function mm(x){ return (x/60000).toFixed(1); }
+function dayCard(r){
+  const dateLabel = new Date(r.date).toLocaleDateString('ar-SA',{day:'2-digit',month:'2-digit',year:'2-digit'});
+  const avg = (typeof r.avgWaitMs==='number') ? mm(r.avgWaitMs)+' دقيقة' : '—';
+  const printed = Number(r.printed||0);
+  const served  = Number(r.served||0);
+  return `
+    <div class="day">
+      <div class="date">${dateLabel}</div>
+      <div class="bars">
+        <div class="bar printed" title="Printed: ${printed}"></div>
+        <div class="bar served"  title="Served: ${served}"></div>
+        <div class="xlabels"><span>Printed</span><span>Served</span></div>
+      </div>
+      <div class="avg"><small>Avg waiting time</small>${avg}</div>
+    </div>
+  `;
+}
+
+// init
+(function(){
+  const qDays = parseInt(params.get('days')||'2',10);
+  const days = (!Number.isNaN(qDays) && qDays>=1 && qDays<=31) ? qDays : 2;
+  setDays(days);
+})();
+</script>
+</body>
+</html>
